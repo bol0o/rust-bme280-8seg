@@ -1,0 +1,15 @@
+[package]
+name = "bme280-8seg"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+cortex-m = "0.7"
+cortex-m-rt = "0.7" # Runtime (inicjalizacja przed main)
+panic-halt = "0.2"  # Co zrobić, gdy program "spanikuje" (po prostu się zatrzyma)
+stm32g0xx-hal = { git = "https://github.com/stm32-rs/stm32g0xx-hal.git", features = ["stm32g0b1", "rt"] }
+
+[[bin]]
+name = "bme280-8seg" # Upewnij się, że nazwa zgadza się z Twoim projektem
+test = false
+bench = false
