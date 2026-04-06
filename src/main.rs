@@ -1,14 +1,13 @@
 #![no_std]
 #![no_main]
 
-// use panic_halt as _;
 use cortex_m_rt::entry;
 use stm32g0xx_hal::{
     hal::delay::DelayNs, prelude::*, stm32
 };
 
-use defmt_rtt as _; // Transport logów przez interfejs debugowania
-use panic_probe as _; // Jeśli program spanikuje, wypisze to w konsoli
+use defmt_rtt as _;
+use panic_probe as _;
 
 mod bme280;
 use bme280::Bme280;
@@ -41,25 +40,34 @@ fn main() -> ! {
     let mut bme280 = Bme280::new(i2c, 0x76);
 
     defmt::info!("Inicjalizowanie BME280...");
-    if bme280.init_sensor(&mut delay) {
-        defmt::info!("BME280 zainicjalizowany pomyślnie");
-    } else {
-        defmt::error!("Błąd inicjalizacji BME280");
-    }
 
+    match bme280.init_sensor(&mut delay) {
+        Ok(_) => defmt::info!("BME280 zainicjalizowany pomyślnie"),
+        Err(e) => defmt::error!("Błąd inicjalizacji BME280: {:?}", e),
+    }
 
     if let Some(cal) = &bme280.calibration_data {
-        defmt::debug!("Dane kalibracyjne: {:?}", cal)
+        defmt::debug!("Dane kalibracyjne: {:?}", cal);
     }
 
-
     loop {
-        match bme280.read_raw() {
-            Ok(raw) => {
-                defmt::debug!("Surowe dane: {:?}", raw);
+        match bme280.get_data() {
+            Ok(data) => {
+                defmt::info!(
+                    "Temp: {}.{:02} °C | Pres: {}.{:02} hPa | Hum: {}.{:02} %",
+                    data.temperature / 100,
+                    (data.temperature % 100).abs(),
+                    data.pressure / 100,
+                    data.pressure % 100,
+                    data.humidity / 100,
+                    data.humidity % 100
+                );
             }
-            Err(_) => defmt::error!("Błąd odczytu!"),
+            Err(e) => {
+                defmt::error!("Błąd odczytu z czujnika: {:?}", e);
+            }
         }
+
         delay.delay_ms(1000);
     }
 }
