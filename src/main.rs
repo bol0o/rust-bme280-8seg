@@ -1,47 +1,73 @@
 #![no_std]
 #![no_main]
 
-use panic_halt as _;
 use cortex_m_rt::entry;
 use stm32g0xx_hal::{
-    prelude::*,
-    stm32
+    hal::delay::DelayNs, prelude::*, stm32
 };
 
+use defmt_rtt as _;
+use panic_probe as _;
+
 mod bme280;
+use bme280::Bme280;
+
+defmt::timestamp!("{=u32}", 0);
 
 #[entry]
 fn main() -> ! {
     let dp = stm32::Peripherals::take().unwrap();
+    let cp = cortex_m::Peripherals::take().unwrap();
+
     let mut rcc = dp.RCC.constrain();
+
+    let mut delay = cp.SYST.delay(&mut rcc);
 
     let gpiob = dp.GPIOB.split(&mut rcc);
     let gpioa = dp.GPIOA.split(&mut rcc);
 
+    // Init BME280
     let scl = gpiob.pb8.into_open_drain_output();
     let sda = gpioa.pa10.into_open_drain_output();
-
+    
     let i2c = dp.I2C1.i2c(
         sda,
         scl,
         100.kHz(),
         &mut rcc,
     );
+    
+    let mut bme280 = Bme280::new(i2c, 0x76);
 
-    let mut sensor = bme280::Bme280::new(i2c, 0x76);
+    defmt::info!("Inicjalizowanie BME280...");
 
-    let mut led = gpioa.pa5.into_push_pull_output();
+    match bme280.init_sensor(&mut delay) {
+        Ok(_) => defmt::info!("BME280 zainicjalizowany pomyślnie"),
+        Err(e) => defmt::error!("Błąd inicjalizacji BME280: {:?}", e),
+    }
 
-    if sensor.check_id() {
-        led.set_high().unwrap();
-    } else {
-        loop {
-            led.toggle().unwrap();
-            cortex_m::asm::delay(1_000_000);
-        }
+    if let Some(cal) = &bme280.calibration_data {
+        defmt::debug!("Dane kalibracyjne: {:?}", cal);
     }
 
     loop {
+        match bme280.get_data() {
+            Ok(data) => {
+                defmt::info!(
+                    "Temp: {}.{:02} °C | Pres: {}.{:02} hPa | Hum: {}.{:02} %",
+                    data.temperature / 100,
+                    (data.temperature % 100).abs(),
+                    data.pressure / 100,
+                    data.pressure % 100,
+                    data.humidity / 100,
+                    data.humidity % 100
+                );
+            }
+            Err(e) => {
+                defmt::error!("Błąd odczytu z czujnika: {:?}", e);
+            }
+        }
 
+        delay.delay_ms(1000);
     }
 }
