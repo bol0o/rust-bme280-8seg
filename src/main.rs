@@ -14,6 +14,18 @@ use bme280::Bme280;
 
 defmt::timestamp!("{=u32}", 0);
 
+use core::cell::{Cell, RefCell};
+use cortex_m::interrupt::Mutex;
+use stm32g0xx_hal::{
+    exti::{Event, ExtiExt},
+    gpio::SignalEdge,
+    pac::interrupt,
+};
+
+//global
+static EXTI: Mutex<RefCell<Option<stm32::EXTI>>> = Mutex::new(RefCell::new(None));
+static DISPLAY_MODE: Mutex<Cell<u8>> = Mutex::new(Cell::new(0));
+
 #[entry]
 fn main() -> ! {
     let dp = stm32::Peripherals::take().unwrap();
@@ -25,6 +37,23 @@ fn main() -> ! {
 
     let gpiob = dp.GPIOB.split(&mut rcc);
     let gpioa = dp.GPIOA.split(&mut rcc);
+
+    let gpiod = dp.GPIOD.split(&mut rcc);
+
+    let mut exti = dp.EXTI;
+
+    gpiod
+        .pd4
+        .into_pull_up_input()
+        .listen(SignalEdge::Falling, &mut exti);
+
+    cortex_m::interrupt::free(|cs| {
+        EXTI.borrow(cs).replace(Some(exti));
+    });
+
+    unsafe {
+        cortex_m::peripheral::NVIC::unmask(stm32::Interrupt::EXTI4_15);
+    }
 
     // Init BME280
     let scl = gpiob.pb8.into_open_drain_output();
@@ -70,4 +99,19 @@ fn main() -> ! {
 
         delay.delay_ms(1000);
     }
+}
+
+#[interrupt]
+fn EXTI4_15() {
+    cortex_m::interrupt::free(|cs| {
+        if let Some(exti) = EXTI.borrow(cs).borrow_mut().as_mut() {
+            exti.unpend(Event::GPIO4);
+        }
+
+        let current_mode = DISPLAY_MODE.borrow(cs).get();
+        let next_mode = if current_mode >= 2 { 0 } else { current_mode + 1 };
+        DISPLAY_MODE.borrow(cs).set(next_mode);
+
+        defmt::info!("Mode changed {}", next_mode);
+    });
 }
