@@ -33,8 +33,6 @@ static MODE_CHANGE_PENDING: Mutex<Cell<bool>> = Mutex::new(Cell::new(false));
 const DISPLAY_REFRESH_MS: u32 = 2;
 const SENSOR_READ_INTERVAL_MS: u32 = 1000;
 const SENSOR_READ_EVERY_LOOPS: u32 = SENSOR_READ_INTERVAL_MS / DISPLAY_REFRESH_MS;
-const BUTTON_DEBOUNCE_MS: u32 = 40;
-const BUTTON_DEBOUNCE_LOOPS: u32 = BUTTON_DEBOUNCE_MS / DISPLAY_REFRESH_MS;
 
 #[entry]
 fn main() -> ! {
@@ -123,34 +121,19 @@ fn main() -> ! {
         defmt::debug!("Dane kalibracyjne: {:?}", cal);
     }
 
-    // Loop counters for sensor polling and button debounce.
+    // Loop counter for sensor polling.
     let mut loop_counter: u32 = 0;
-    let mut debounce_counter: u32 = 0;
 
     loop {
-        // Software debounce for button events signaled by EXTI.
-        if debounce_counter > 0 {
-            debounce_counter -= 1;
-        }
+        cortex_m::interrupt::free(|cs| {
+            if MODE_CHANGE_PENDING.borrow(cs).get() {
+                MODE_CHANGE_PENDING.borrow(cs).set(false);
 
-        if debounce_counter == 0 {
-            let mode_changed = cortex_m::interrupt::free(|cs| {
-                if MODE_CHANGE_PENDING.borrow(cs).get() {
-                    MODE_CHANGE_PENDING.borrow(cs).set(false);
-
-                    let current_mode = DISPLAY_MODE.borrow(cs).get();
-                    let next_mode = (current_mode + 1) % 3;
-                    DISPLAY_MODE.borrow(cs).set(next_mode);
-                    true
-                } else {
-                    false
-                }
-            });
-
-            if mode_changed {
-                debounce_counter = BUTTON_DEBOUNCE_LOOPS;
+                let current_mode = DISPLAY_MODE.borrow(cs).get();
+                let next_mode = (current_mode + 1) % 3;
+                DISPLAY_MODE.borrow(cs).set(next_mode);
             }
-        }
+        });
 
         let mode = cortex_m::interrupt::free(|cs| DISPLAY_MODE.borrow(cs).get());
         mode_leds.update(mode);
