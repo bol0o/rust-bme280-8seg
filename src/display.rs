@@ -98,13 +98,16 @@ impl Display7Seg {
     /// 
     /// * `value`: The integer value to display.
     /// * `dot_position`: Index (0-3) where the decimal point should be placed.
-    pub fn show_value(&mut self, value: i32, dot_position: usize) {
+    pub fn show_value(&mut self, value: i32, mut dot_position: usize) {
         let is_negative = value < 0;
         let mut val = value.saturating_abs();
         
         if is_negative {
             // Cap to 3 digits to leave room for the minus sign
+            val /= 10;
+            dot_position += 1;
             val = val.min(999);
+            
             self.buffer[3] = (val % 10) as u8;
             val /= 10;
             self.buffer[2] = (val % 10) as u8;
