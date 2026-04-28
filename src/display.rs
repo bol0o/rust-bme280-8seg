@@ -24,11 +24,11 @@ pub struct ModeLeds {
 impl ModeLeds {
     /// Turns on only the LED corresponding to the currently selected mode.
     /// 
-    /// * `mode`: 0 for Temperature, 1 for Pressure, 2 for Humidity.
+    /// * `mode`: 0 for Temperature, 1 for Humidity, 2 for Pressure.
     pub fn update(&mut self, mode: u8) {
         if mode == 0 { let _ = self.temp.set_high(); } else { let _ = self.temp.set_low(); }
-        if mode == 1 { let _ = self.press.set_high(); } else { let _ = self.press.set_low(); }
-        if mode == 2 { let _ = self.hum.set_high(); } else { let _ = self.hum.set_low(); }
+        if mode == 1 { let _ = self.hum.set_high(); } else { let _ = self.hum.set_low(); }
+        if mode == 2 { let _ = self.press.set_high(); } else { let _ = self.press.set_low(); }
     }
 }
 

@@ -62,7 +62,7 @@ struct RawData {
 }
 
 /// Final compensated environmental data.
-#[derive(defmt::Format)]
+#[derive(defmt::Format, Clone, Copy)]
 pub struct BmeData {
     /// Temperature in hundredths of a degree Celsius (e.g., 2512 = 25.12°C).
     pub temperature: i32,

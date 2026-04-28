@@ -32,13 +32,13 @@ use stm32g0xx_hal::{
 /// Shared state for the EXTI peripheral to allow clearing interrupt pending bits.
 static EXTI: Mutex<RefCell<Option<stm32::EXTI>>> = Mutex::new(RefCell::new(None));
 
-/// Shared state holding the current display mode (0: Temp, 1: Press, 2: Hum).
+/// Shared state holding the current display mode (0: Temperature, 1: Humidity, 2: Pressure).
 static DISPLAY_MODE: Mutex<Cell<u8>> = Mutex::new(Cell::new(0));
 
 /// Shared state flag indicating that a mode change was requested via the button.
 static MODE_CHANGE_PENDING: Mutex<Cell<bool>> = Mutex::new(Cell::new(false));
 
-/// Display multiplexing refresh rate in milliseconds.
+/// Display multiplexing refresh rate in milliseconds (per digit).
 const DISPLAY_REFRESH_MS: u32 = 2;
 
 /// Interval for polling the BME280 sensor in milliseconds.
@@ -53,7 +53,7 @@ fn main() -> ! {
     let dp = stm32::Peripherals::take().unwrap();
     let cp = cortex_m::Peripherals::take().unwrap();
 
-    // Configure core clock and SysTick delay provider.
+    // Configure core clock (16MHz HSI) and SysTick delay provider.
     let mut rcc = dp.RCC.constrain();
     let mut delay = cp.SYST.delay(&mut rcc);
 
@@ -62,6 +62,7 @@ fn main() -> ! {
     let gpioa = dp.GPIOA.split(&mut rcc);
     let gpiod = dp.GPIOD.split(&mut rcc);
 
+    // Initialize mode indicator LEDs.
     let led_temp = gpiod.pd0.into_push_pull_output();
     let led_hum = gpiod.pd1.into_push_pull_output();
     let led_press = gpiod.pd2.into_push_pull_output();
@@ -72,12 +73,13 @@ fn main() -> ! {
         press: led_press,
     };
 
-    // Configure the mode switch button on PD4 with EXTI interrupt on falling edge.
+    // Configure the mode switch button on PD4.
+    // Floating input because of external pull-up and debouncing capacitor.
     let mut exti = dp.EXTI;
 
     gpiod
         .pd4
-        .into_pull_up_input()
+        .into_floating_input()
         .listen(SignalEdge::Falling, &mut exti);
 
     // Store the EXTI peripheral in the shared Mutex for ISR access.
@@ -85,12 +87,12 @@ fn main() -> ! {
         EXTI.borrow(cs).replace(Some(exti));
     });
 
-    // Unmask the EXTI4_15 interrupt line in the NVIC.
+    // Unmask EXTI4_15 interrupt line in NVIC to enable button clicks.
     unsafe {
         cortex_m::peripheral::NVIC::unmask(stm32::Interrupt::EXTI4_15);
     }
 
-    // Configure the 7-segment display segment pins.
+    // Configure the 7-segment display segment pins (A, B, C, D, E, F, G, DP).
     let segments = Segments {
         a: gpiob.pb0.into_push_pull_output(),
         b: gpiob.pb1.into_push_pull_output(),
@@ -102,7 +104,7 @@ fn main() -> ! {
         dp: gpiob.pb7.into_push_pull_output(),
     };
 
-    // Configure the 7-segment display digit selector pins.
+    // Configure the 7-segment display digit selector pins (D1-D4).
     let digits = Digits {
         d1: gpioa.pa6.into_push_pull_output(),
         d2: gpioa.pa7.into_push_pull_output(),
@@ -112,7 +114,7 @@ fn main() -> ! {
 
     let mut screen = Display7Seg::new(segments, digits);
 
-    // Initialize the I2C bus and BME280 sensor.
+    // Initialize I2C1 (SDA: PA10, SCL: PB8).
     let scl = gpiob.pb8.into_open_drain_output();
     let sda = gpioa.pa10.into_open_drain_output();
     
@@ -123,6 +125,7 @@ fn main() -> ! {
         &mut rcc,
     );
     
+    // Initialize BME280 sensor (Default I2C address: 0x76).
     let mut bme280 = Bme280::new(i2c, 0x76);
 
     defmt::info!("Inicjalizowanie BME280...");
@@ -139,8 +142,13 @@ fn main() -> ! {
     // Loop counter for scheduling sensor reads without blocking multiplexing.
     let mut loop_counter: u32 = 0;
 
+    // Cache for the last valid sensor reading to allow immediate display updates.
+    let mut last_sensor_data: Option<bme280::BmeData> = None;
+
     loop {
-        // Safely check and process the mode change flag set by the ISR.
+        let mut mode_changed = false;
+
+        // Check if the EXTI interrupt flagged a button press.
         cortex_m::interrupt::free(|cs| {
             if MODE_CHANGE_PENDING.borrow(cs).get() {
                 MODE_CHANGE_PENDING.borrow(cs).set(false);
@@ -148,54 +156,41 @@ fn main() -> ! {
                 let current_mode = DISPLAY_MODE.borrow(cs).get();
                 let next_mode = (current_mode + 1) % 3;
                 DISPLAY_MODE.borrow(cs).set(next_mode);
+                
+                mode_changed = true;
             }
         });
 
-        // Retrieve the current mode to update LEDs and display payload.
+        // Retrieve current mode to update status LEDs.
         let mode = cortex_m::interrupt::free(|cs| DISPLAY_MODE.borrow(cs).get());
         mode_leds.update(mode);
 
-        // Keep the display refreshed continuously (hardware multiplexing cycle).
+        // If the mode changed, update display buffer immediately using cached data
+        if mode_changed {
+            if let Some(data) = &last_sensor_data {
+                update_display_buffer(&mut screen, mode, data);
+            }
+        }
+
+        // Perform one multiplexing cycle (illuminates one digit).
         screen.refresh(&mut delay);
 
-        // Poll the sensor roughly once per second.
+        // Periodic sensor polling.
         loop_counter += 1;
         if loop_counter >= SENSOR_READ_EVERY_LOOPS {
             loop_counter = 0;
 
             match bme280.get_data() {
                 Ok(data) => {
-                    // Log the environmental data via defmt.
-                    defmt::info!(
-                        "Temp: {}.{:02} °C | Pres: {}.{:02} hPa | Hum: {}.{:02} %",
-                        data.temperature / 100,
-                        (data.temperature % 100).abs(),
-                        data.pressure / 100,
-                        data.pressure % 100,
-                        data.humidity / 100,
-                        data.humidity % 100
-                    );
+                    last_sensor_data = Some(data); // Zapisz dane do cache
+                    
+                    // Logowanie defmt
+                    defmt::info!("Odczyt: T: {}, H: {}, P: {}", data.temperature, data.humidity, data.pressure);
 
-                    // Update the display buffer based on the selected mode.
-                    match mode {
-                        0 => {
-                            // Temperature: e.g. 24.50 -> 2450 with decimal point at position 1.
-                            screen.show_value(data.temperature, 1);
-                        }
-                        1 => {
-                            // Pressure: show whole hPa value across all 4 digits.
-                            screen.show_value(data.pressure / 100, 4);
-                        }
-                        2 => {
-                            // Humidity: e.g. 45.30 -> 4530 with decimal point at position 1.
-                            screen.show_value(data.humidity, 1);
-                        }
-                        _ => {}
-                    }
+                    // Aktualizacja wyświetlacza nowymi danymi
+                    update_display_buffer(&mut screen, mode, &data);
                 }
-                Err(e) => {
-                    defmt::error!("Błąd odczytu z czujnika: {:?}", e);
-                }
+                Err(e) => defmt::error!("Błąd czujnika: {:?}", e),
             }
         }
     }
@@ -213,4 +208,14 @@ fn EXTI4_15() {
         // Signal the main loop that the button was pressed.
         MODE_CHANGE_PENDING.borrow(cs).set(true);
     });
+}
+
+/// Helper function to format sensor data for the 7-segment display based on active mode.
+fn update_display_buffer(screen: &mut Display7Seg, mode: u8, data: &bme280::BmeData) {
+    match mode {
+        0 => screen.show_value(data.temperature, 1),    // Temp
+        1 => screen.show_value(data.humidity, 1),       // Hum
+        2 => screen.show_value(data.pressure / 100, 4), // Press
+        _ => {}
+    }
 }
